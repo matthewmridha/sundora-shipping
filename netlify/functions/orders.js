@@ -1,76 +1,34 @@
-const { Shopify } = require("@shopify/shopify-api");
+const fetch = require("node-fetch");
 require("dotenv").config();
-
-const shopify = new Shopify({
-  apiKey: process.env.SHOPIFY_API_KEY,
-  apiSecretKey: process.env.SHOPIFY_API_SECRET,
-  scopes: [
-    "read_orders",
-    "write_orders",
-    "read_fulfillments",
-    "write_fulfillments",
-  ],
-  hostName: "sundora-bd.myshopify.com",
-  isEmbeddedApp: true,
-  apiVersion: "2025-04",
-});
 
 exports.handler = async (event, context) => {
   try {
-    const session = await shopify.session.create("sundora-bd.myshopify.com");
-    const client = new shopify.clients.Graphql({ session });
-
-    const ordersQuery = `
-      query {
-        orders(first: 50, query: "status:any") {
-          edges {
-            node {
-              id
-              name
-              shippingAddress {
-                name
-                address1
-                city
-                zip
-              }
-              totalPriceSet {
-                shopMoney {
-                  amount
-                }
-              }
-              fulfillments(first: 1) {
-                edges {
-                  node {
-                    trackingInfo {
-                      number
-                      url
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
+    const response = await fetch(
+      "https://sundora-bd.myshopify.com/admin/api/2025-04/orders.json?status=any",
+      {
+        headers: {
+          "X-Shopify-Access-Token": process.env.SHOPIFY_ACCESS_TOKEN,
+          "Content-Type": "application/json",
+        },
       }
-    `;
+    );
 
-    const response = await client.query({
-      data: {
-        query: ordersQuery,
-      },
-    });
+    const data = await response.json();
 
-    const orders = response.body.data.orders.edges.map((edge) => {
-      const order = edge.node;
-      const fulfillment = order.fulfillments.edges[0]?.node;
+    if (!response.ok) {
+      throw new Error(data.errors || "Failed to fetch orders");
+    }
+
+    const orders = data.orders.map((order) => {
+      const fulfillment = order.fulfillments?.[0];
       return {
-        id: order.id.split("/").pop(),
+        id: order.id,
         name: order.name,
-        customerName: order.shippingAddress.name,
-        shippingAddress: order.shippingAddress.address1,
-        totalPrice: order.totalPriceSet.shopMoney.amount,
-        trackingNumber: fulfillment?.trackingInfo?.number,
-        trackingUrl: fulfillment?.trackingInfo?.url,
+        customerName: order.shipping_address.name,
+        shippingAddress: order.shipping_address.address1,
+        totalPrice: order.total_price,
+        trackingNumber: fulfillment?.tracking_number,
+        trackingUrl: fulfillment?.tracking_url,
       };
     });
 

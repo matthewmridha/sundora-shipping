@@ -1,90 +1,31 @@
-const { Shopify } = require("@shopify/shopify-api");
+const fetch = require("node-fetch");
 require("dotenv").config();
-
-const shopify = new Shopify({
-  apiKey: process.env.SHOPIFY_API_KEY,
-  apiSecretKey: process.env.SHOPIFY_API_SECRET,
-  scopes: [
-    "read_orders",
-    "write_orders",
-    "read_fulfillments",
-    "write_fulfillments",
-  ],
-  hostName: "sundora-bd.myshopify.com",
-  isEmbeddedApp: true,
-  apiVersion: "2025-04",
-});
 
 exports.handler = async (event, context) => {
   try {
     const { orderId } = JSON.parse(event.body);
-    const session = await shopify.session.create("sundora-bd.myshopify.com");
-    const client = new shopify.clients.Graphql({ session });
 
-    // Get order details
-    const orderQuery = `
-      query getOrder($id: ID!) {
-        order(id: $id) {
-          id
-          name
-          shippingAddress {
-            name
-            phone
-            address1
-            city
-            zip
-          }
-          totalPriceSet {
-            shopMoney {
-              amount
-            }
-          }
-          totalLineItemsPriceSet {
-            shopMoney {
-              amount
-            }
-          }
-          note
-          lineItems(first: 10) {
-            edges {
-              node {
-                title
-                quantity
-                variant {
-                  title
-                }
-                priceSet {
-                  shopMoney {
-                    amount
-                  }
-                }
-              }
-            }
-          }
-          fulfillments(first: 1) {
-            edges {
-              node {
-                id
-              }
-            }
-          }
-        }
-      }
-    `;
-
-    const orderResponse = await client.query({
-      data: {
-        query: orderQuery,
-        variables: {
-          id: `gid://shopify/Order/${orderId}`,
+    // Get order details from Shopify REST API
+    const orderResponse = await fetch(
+      `https://sundora-bd.myshopify.com/admin/api/2025-04/orders/${orderId}.json`,
+      {
+        headers: {
+          "X-Shopify-Access-Token": process.env.SHOPIFY_ACCESS_TOKEN,
+          "Content-Type": "application/json",
         },
-      },
-    });
+      }
+    );
 
-    const order = orderResponse.body.data.order;
+    const orderData = await orderResponse.json();
+
+    if (!orderResponse.ok) {
+      throw new Error(orderData.errors || "Failed to fetch order details");
+    }
+
+    const order = orderData.order;
 
     // Process address to get area
-    const addressParts = order.shippingAddress.address1.split(",");
+    const addressParts = order.shipping_address.address1.split(",");
     const lastPart = addressParts[addressParts.length - 1].trim();
     const addressWithoutLastPart = addressParts.slice(0, -1).join(",").trim();
 
@@ -93,8 +34,8 @@ exports.handler = async (event, context) => {
     const matchingArea = areas.find(
       (area) =>
         area.name === lastPart &&
-        area.district_name === order.shippingAddress.city &&
-        area.post_code.toString() === order.shippingAddress.zip
+        area.district_name === order.shipping_address.city &&
+        area.post_code.toString() === order.shipping_address.zip
     );
 
     if (!matchingArea) {
@@ -108,21 +49,21 @@ exports.handler = async (event, context) => {
     };
 
     const redxBody = {
-      customer_name: order.shippingAddress.name,
-      customer_phone: order.shippingAddress.phone,
+      customer_name: order.shipping_address.name,
+      customer_phone: order.shipping_address.phone,
       delivery_area: matchingArea.name,
       delivery_area_id: matchingArea.redx_id,
       customer_address: addressWithoutLastPart,
       merchant_invoice_id: order.name,
-      cash_collection_amount: order.totalPriceSet.shopMoney.amount,
+      cash_collection_amount: order.total_price,
       parcel_weight: 1000,
       instruction: order.note || "",
-      value: order.totalLineItemsPriceSet.shopMoney.amount,
+      value: order.total_line_items_price,
       is_closed_box: true,
-      parcel_details_json: order.lineItems.edges.map((item) => ({
-        name: item.node.title,
-        category: item.node.variant?.title || "General",
-        value: item.node.priceSet.shopMoney.amount,
+      parcel_details_json: order.line_items.map((item) => ({
+        name: item.title,
+        category: item.variant_title || "General",
+        value: item.price,
       })),
     };
 
@@ -143,48 +84,39 @@ exports.handler = async (event, context) => {
     }
 
     // Update Shopify fulfillment tracking
-    const fulfillmentId = order.fulfillments.edges[0]?.node.id;
+    const fulfillmentId = order.fulfillments?.[0]?.id;
     if (!fulfillmentId) {
       throw new Error("No fulfillment found for order");
     }
 
-    const trackingUpdateMutation = `
-      mutation FulfillmentTrackingInfoUpdate($fulfillmentId: ID!, $trackingInfoInput: FulfillmentTrackingInput!, $notifyCustomer: Boolean) {
-        fulfillmentTrackingInfoUpdate(
-          fulfillmentId: $fulfillmentId
-          trackingInfoInput: $trackingInfoInput
-          notifyCustomer: true
-        ) {
-          fulfillment {
-            id
-            status
-            trackingInfo {
-              company
-              number
-              url
-            }
-          }
-          userErrors {
-            field
-            message
-          }
-        }
-      }
-    `;
-
-    const trackingResponse = await client.query({
-      data: {
-        query: trackingUpdateMutation,
-        variables: {
-          fulfillmentId,
-          trackingInfoInput: {
-            company: "RedX",
-            number: redxData.tracking_id,
-            url: `https://redx.com.bd/track-parcel/?trackingId=${redxData.tracking_id}`,
-          },
+    const trackingUpdateResponse = await fetch(
+      `https://sundora-bd.myshopify.com/admin/api/2025-04/fulfillments/${fulfillmentId}.json`,
+      {
+        method: "PUT",
+        headers: {
+          "X-Shopify-Access-Token": process.env.SHOPIFY_ACCESS_TOKEN,
+          "Content-Type": "application/json",
         },
-      },
-    });
+        body: JSON.stringify({
+          fulfillment: {
+            tracking_info: {
+              number: redxData.tracking_id,
+              url: `https://redx.com.bd/track-parcel/?trackingId=${redxData.tracking_id}`,
+              company: "RedX",
+            },
+            notify_customer: true,
+          },
+        }),
+      }
+    );
+
+    const trackingData = await trackingUpdateResponse.json();
+
+    if (!trackingUpdateResponse.ok) {
+      throw new Error(
+        trackingData.errors || "Failed to update tracking information"
+      );
+    }
 
     return {
       statusCode: 200,

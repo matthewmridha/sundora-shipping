@@ -1,49 +1,56 @@
-const fetch = require("node-fetch");
+const crypto = require("crypto");
+const axios = require("axios");
 
 exports.handler = async (event, context) => {
   try {
-    const { code, shop, state } = event.queryStringParameters;
+    const { code, state } = event.queryStringParameters;
 
-    if (!code || !shop) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "Missing required parameters" }),
-      };
+    if (!code || !state) {
+      throw new Error("Missing required parameters");
     }
 
-    // Exchange the authorization code for an access token
-    const tokenResponse = await fetch(
+    // Decode and validate state
+    const decodedState = JSON.parse(Buffer.from(state, "base64").toString());
+    const { shop, nonce } = decodedState;
+
+    if (!shop || !nonce) {
+      throw new Error("Invalid state parameter");
+    }
+
+    // Validate shop domain again
+    if (!shop.match(/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/)) {
+      throw new Error("Invalid shop domain");
+    }
+
+    // Exchange the code for an access token
+    const accessTokenResponse = await axios.post(
       `https://${shop}/admin/oauth/access_token`,
       {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          client_id: process.env.SHOPIFY_CLIENT_ID,
-          client_secret: process.env.SHOPIFY_CLIENT_SECRET,
-          code,
-        }),
+        client_id: process.env.SHOPIFY_CLIENT_ID,
+        client_secret: process.env.SHOPIFY_CLIENT_SECRET,
+        code,
       }
     );
 
-    const tokenData = await tokenResponse.json();
+    const { access_token } = accessTokenResponse.data;
 
-    if (!tokenResponse.ok) {
-      throw new Error(
-        tokenData.error_description || "Failed to exchange token"
-      );
+    if (!access_token) {
+      throw new Error("Failed to obtain access token");
     }
 
-    // Redirect back to the app with the shop parameter
+    // Store the access token securely (you should implement this)
+    // For now, we'll just redirect back to the app
+    const appUrl = `https://${shop}/admin/apps/${process.env.SHOPIFY_CLIENT_ID}`;
+
     return {
       statusCode: 302,
       headers: {
-        Location: `${process.env.APP_URL}?shop=${shop}`,
+        Location: appUrl,
+        "Cache-Control": "no-cache",
       },
     };
   } catch (error) {
-    console.error("OAuth Error:", error);
+    console.error("Callback Error:", error);
     return {
       statusCode: 302,
       headers: {

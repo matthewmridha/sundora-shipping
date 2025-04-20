@@ -3,17 +3,17 @@ const axios = require("axios");
 
 exports.handler = async (event, context) => {
   try {
-    const { code, state } = event.queryStringParameters;
+    const { code, state, shop } = event.queryStringParameters;
 
-    if (!code || !state) {
+    if (!code || !state || !shop) {
       throw new Error("Missing required parameters");
     }
 
     // Decode and validate state
     const decodedState = JSON.parse(Buffer.from(state, "base64").toString());
-    const { shop, nonce } = decodedState;
+    const { nonce } = decodedState;
 
-    if (!shop || !nonce) {
+    if (!nonce) {
       throw new Error("Invalid state parameter");
     }
 
@@ -32,10 +32,17 @@ exports.handler = async (event, context) => {
       }
     );
 
-    const { access_token } = accessTokenResponse.data;
+    const { access_token, scope } = accessTokenResponse.data;
 
     if (!access_token) {
       throw new Error("Failed to obtain access token");
+    }
+
+    // Verify the granted scopes match what we requested
+    const requestedScopes =
+      "read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_inventory,write_inventory";
+    if (scope !== requestedScopes) {
+      throw new Error("Granted scopes do not match requested scopes");
     }
 
     // Store the access token securely (you should implement this)

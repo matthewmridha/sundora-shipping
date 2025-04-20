@@ -1,12 +1,18 @@
-const crypto = require("crypto");
 const fetch = require("node-fetch");
 
 exports.handler = async (event, context) => {
   try {
     const { code, shop, state } = event.queryStringParameters;
 
+    if (!code || !shop) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: "Missing required parameters" }),
+      };
+    }
+
     // Exchange the authorization code for an access token
-    const accessTokenResponse = await fetch(
+    const tokenResponse = await fetch(
       `https://${shop}/admin/oauth/access_token`,
       {
         method: "POST",
@@ -21,20 +27,30 @@ exports.handler = async (event, context) => {
       }
     );
 
-    const { access_token } = await accessTokenResponse.json();
+    const tokenData = await tokenResponse.json();
 
-    // Store the access token securely (you might want to save this in your database)
-    // For now, we'll redirect back to the app with the token
+    if (!tokenResponse.ok) {
+      throw new Error(
+        tokenData.error_description || "Failed to exchange token"
+      );
+    }
+
+    // Redirect back to the app with the shop parameter
     return {
       statusCode: 302,
       headers: {
-        Location: `/?shop=${shop}&token=${access_token}`,
+        Location: `${process.env.APP_URL}?shop=${shop}`,
       },
     };
   } catch (error) {
+    console.error("OAuth Error:", error);
     return {
-      statusCode: 500,
-      body: JSON.stringify({ error: error.message }),
+      statusCode: 302,
+      headers: {
+        Location: `${process.env.APP_URL}/error?message=${encodeURIComponent(
+          error.message
+        )}`,
+      },
     };
   }
 };
